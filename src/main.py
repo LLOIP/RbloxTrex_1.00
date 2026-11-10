@@ -10,7 +10,6 @@ import struct
 from pathlib import Path
 
 import cv2
-import mss
 import numpy as np
 import win32gui
 import win32process
@@ -25,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtMultimedia import QSoundEffect
 
-APP_DIR = Path.home() / "AppData" / "Local" / "RBloxTrex"
+APP_DIR = Path.home() / "AppData" / "Local" / "ResolShaders"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG = APP_DIR / "settings.json"
 user32 = ctypes.windll.user32
@@ -52,7 +51,7 @@ def list_windows():
                 return
         except Exception:
             return
-        if "RBloxTrex" in title:
+        if any(x in title.lower() for x in ("resolshaders", "rbloxtrex")):
             return
         found.append((hwnd, f"{title}  —  {proc}"))
     win32gui.EnumWindows(callback, None)
@@ -65,7 +64,7 @@ class EffectEngine:
             "brightness": 2, "contrast": 116, "saturation": 108,
             "warmth": 7, "sharpness": 12, "bloom": 22,
             "exposure": 8, "vignette": 8, "chromatic": 0,
-            "fps": 15, "scale": 50, "preset": "Low-end (GT 1030)"
+            "fps": 30, "scale": 50, "preset": "Low-end (GT 1030)"
         }
 
     def apply(self, frame):
@@ -134,64 +133,90 @@ class EffectEngine:
 
 
 class FrameBus(QObject):
-    frame = Signal(object, object)
     error = Signal(str)
 
 
 class WindowCaptureWorker(threading.Thread):
-    def __init__(self, hwnd, engine, bus, overlay_hwnd):
+    """Captures the selected application window through Windows Graphics Capture.
+
+    Unlike desktop-region capture, WGC captures the target window directly. The
+    overlay never needs to hide/show itself, which removes the visible flicker and
+    avoids recursively capturing the processed overlay.
+    """
+    def __init__(self, hwnd, title, engine, overlay):
         super().__init__(daemon=True)
-        self.hwnd, self.engine, self.bus = hwnd, engine, bus
-        self.overlay_hwnd = overlay_hwnd
+        self.hwnd = hwnd
+        self.title = title
+        self.engine = engine
+        self.overlay = overlay
         self.running = True
+        self.capture = None
+        self.control = None
 
     def stop(self):
         self.running = False
+        try:
+            if self.control is not None:
+                self.control.stop()
+        except Exception:
+            pass
 
     def run(self):
         try:
-            with mss.mss() as sct:
-                while self.running:
-                    start = time.perf_counter()
-                    if not win32gui.IsWindow(self.hwnd) or win32gui.IsIconic(self.hwnd):
-                        time.sleep(0.15)
-                        continue
-                    left, top, right, bottom = win32gui.GetWindowRect(self.hwnd)
-                    width, height = right-left, bottom-top
-                    if width < 2 or height < 2:
-                        time.sleep(0.1)
-                        continue
-                    # Capture monitor region containing the selected window, then crop.
-                    mon = sct.monitors[0]
-                    ml, mt = mon["left"], mon["top"]
-                    cl = max(left, ml); ct = max(top, mt)
-                    cr = min(right, ml + mon["width"]); cb = min(bottom, mt + mon["height"])
-                    if cr <= cl or cb <= ct:
-                        time.sleep(0.1)
-                        continue
-                    # Temporarily hide our own overlay while taking the desktop
-                    # frame. WDA_EXCLUDEFROMCAPTURE can produce a black rectangle
-                    # in MSS captures on some Windows/GPU combinations.
-                    # Hide/show is done with Win32 and NOACTIVATE so Roblox keeps focus.
-                    hidden = False
-                    try:
-                        if self.overlay_hwnd and user32.IsWindow(self.overlay_hwnd):
-                            user32.ShowWindow(self.overlay_hwnd, 0)  # SW_HIDE
-                            hidden = True
-                        shot = np.asarray(sct.grab({
-                            "left": cl, "top": ct, "width": cr-cl, "height": cb-ct
-                        }))
-                    finally:
-                        if hidden and self.overlay_hwnd and user32.IsWindow(self.overlay_hwnd):
-                            user32.ShowWindow(self.overlay_hwnd, 4)  # SW_SHOWNOACTIVATE
-                    frame = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
-                    filtered = self.engine.apply(frame)
-                    # Position in virtual desktop coordinates.
-                    self.bus.frame.emit(filtered, (cl, ct, cr-cl, cb-ct))
-                    fps = max(5, min(240, int(self.engine.settings["fps"])))
-                    time.sleep(max(0.0, 1.0/fps - (time.perf_counter()-start)))
+            from windows_capture import WindowsCapture
+            fps = max(5, min(120, int(self.engine.settings.get("fps", 30))))
+            interval = max(1, int(1000 / fps))
+            capture = WindowsCapture(
+                cursor_capture=None,
+                draw_border=None,
+                monitor_index=None,
+                window_hwnd=int(self.hwnd),
+                minimum_update_interval=interval,
+            )
+            self.capture = capture
+
+            @capture.event
+            def on_frame_arrived(frame, capture_control):
+                if not self.running:
+                    capture_control.stop()
+                    return
+                self.control = capture_control
+                try:
+                    # The library exposes WGC frame data as a NumPy-compatible BGRA array.
+                    if hasattr(frame, "to_bgr"):
+                        image = frame.to_bgr()
+                    else:
+                        raw = frame.to_numpy()
+                        if raw is None or getattr(raw, "ndim", 0) != 3 or raw.shape[0] < 2 or raw.shape[1] < 2:
+                            return
+                        image = cv2.cvtColor(raw, cv2.COLOR_BGRA2BGR) if raw.shape[2] == 4 else raw.copy()
+                    if image.ndim != 3 or image.shape[0] < 2 or image.shape[1] < 2:
+                        return
+                    processed = self.engine.apply(image)
+                    if win32gui.IsWindow(self.hwnd):
+                        client_left, client_top = win32gui.ClientToScreen(self.hwnd, (0, 0))
+                        rect = (client_left, client_top, int(image.shape[1]), int(image.shape[0]))
+                    else:
+                        capture_control.stop()
+                        self.running = False
+                        return
+                    # Latest-frame slot is bounded: slow UI never accumulates a frame queue.
+                    self.overlay.publish_frame(processed, rect)
+                except Exception as exc:
+                    self.overlay.bus.error.emit(f"Window capture frame failed: {exc}")
+                    capture_control.stop()
+
+            @capture.event
+            def on_closed():
+                if self.running:
+                    self.overlay.bus.error.emit("The selected game window closed or Windows stopped providing frames.")
+
+            capture.start()
         except Exception as exc:
-            self.bus.error.emit(str(exc))
+            self.overlay.bus.error.emit(
+                "Windows Graphics Capture could not start for this window. "
+                "Try windowed or borderless mode and make sure the game is visible.\n\n" + str(exc)
+            )
 
 
 class Overlay(QWidget):
@@ -201,55 +226,81 @@ class Overlay(QWidget):
                             Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool |
                             Qt.WindowType.WindowDoesNotAcceptFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.label.setStyleSheet("background:#080b10;")
         self.bus = FrameBus()
-        self.bus.frame.connect(self.show_frame)
         self.bus.error.connect(self.error)
         self.engine = EffectEngine()
         self.worker = None
         self.active = False
         self.panel = None
+        self._frame_lock = threading.Lock()
+        self._latest_frame = None
+        self._last_rect = None
+        self._display_timer = QTimer(self)
+        self._display_timer.setInterval(8)
+        self._display_timer.timeout.connect(self._display_latest)
 
-    def show_frame(self, frame, rect):
+    def publish_frame(self, frame, rect):
+        with self._frame_lock:
+            self._latest_frame = (frame, rect)
+
+    def _display_latest(self):
+        with self._frame_lock:
+            item = self._latest_frame
+            self._latest_frame = None
+        if item is None:
+            return
+        frame, rect = item
         x, y, w, h = rect
-        # Keep overlay aligned to the captured client-visible rectangle.
-        self.setGeometry(x, y, w, h)
+        if rect != self._last_rect:
+            self.setGeometry(x, y, w, h)
+            self.label.setGeometry(self.rect())
+            self._last_rect = rect
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, rgb.shape[1], rgb.shape[0], rgb.shape[1]*3,
                       QImage.Format.Format_RGB888).copy()
-        self.label.setGeometry(self.rect())
         self.label.setPixmap(QPixmap.fromImage(qimg).scaled(
             self.size(), Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.FastTransformation))
         if not self.isVisible():
             self.show()
-            # Click-through overlay so mouse input still reaches Roblox.
-            try:
-                hwnd_overlay = int(self.winId())
-                exstyle = user32.GetWindowLongW(hwnd_overlay, -20)
-                # WS_EX_TRANSPARENT = click-through; WS_EX_NOACTIVATE = never steal focus.
-                user32.SetWindowLongW(hwnd_overlay, -20, exstyle | 0x00000020 | 0x00000080 | 0x08000000)
-                user32.SetWindowPos(hwnd_overlay, -1, 0, 0, 0, 0,
-                                    0x0001 | 0x0002 | 0x0010 | 0x0040)
-            except Exception:
-                pass
+            self._set_click_through()
 
-    def start(self, hwnd):
+    def _set_click_through(self):
+        try:
+            hwnd_overlay = int(self.winId())
+            exstyle = user32.GetWindowLongW(hwnd_overlay, -20)
+            # WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED
+            user32.SetWindowLongW(hwnd_overlay, -20, exstyle | 0x00000020 | 0x00000080 | 0x00080000)
+            user32.SetWindowPos(hwnd_overlay, -1, 0, 0, 0, 0,
+                                0x0001 | 0x0002 | 0x0010 | 0x0040)
+        except Exception:
+            pass
+
+    def start(self, hwnd, title):
         if self.active:
             self.stop()
         self.active = True
-        self.worker = WindowCaptureWorker(hwnd, self.engine, self.bus, int(self.winId()))
+        self._last_rect = None
+        with self._frame_lock:
+            self._latest_frame = None
+        self.worker = WindowCaptureWorker(hwnd, title, self.engine, self)
+        self._display_timer.start()
         self.worker.start()
 
     def stop(self):
         self.active = False
+        self._display_timer.stop()
         if self.worker:
             self.worker.stop()
             self.worker.join(timeout=2)
             self.worker = None
+        with self._frame_lock:
+            self._latest_frame = None
         self.hide()
 
     def error(self, message):
@@ -266,7 +317,7 @@ class MainPanel(QWidget):
         super().__init__()
         self.overlay = overlay
         overlay.panel = self
-        self.setWindowTitle("RBloxTrex")
+        self.setWindowTitle("ResolShaders")
         self.setMinimumWidth(440)
         self.setStyleSheet("""
             QWidget { background:#fff7fb; color:#542b43; font-family:Segoe UI; font-size:10pt; }
@@ -284,11 +335,11 @@ class MainPanel(QWidget):
             QLabel#muted { color:#a47791; font-size:9pt; }
         """)
         layout = QVBoxLayout(self)
-        title = QLabel("RBloxTrex  <span style='color:#df6da4'>PINK EDITION</span>")
+        title = QLabel("ResolShaders  <span style='color:#df6da4'>GAME VISUALS</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
         title.setStyleSheet("font-size:19pt;font-weight:800;color:#6b3654;")
         layout.addWidget(title)
-        sub = QLabel("Window-specific post-processing • Low-end PC mode")
+        sub = QLabel("Universal window post-processing • Windows 10/11")
         sub.setObjectName("muted")
         layout.addWidget(sub)
 
@@ -330,7 +381,7 @@ class MainPanel(QWidget):
         pform = QFormLayout(perf)
         self.fps = QComboBox()
         for v in (15, 20, 30, 60, 90, 120, 144, 165, 180, 200, 240): self.fps.addItem(f"{v} FPS", v)
-        self.fps.setCurrentIndex(0)
+        self.fps.setCurrentIndex(max(0, self.fps.findData(30)))
         self.fps.currentIndexChanged.connect(lambda _: self.set_setting("fps", self.fps.currentData()))
         self.scale = QComboBox()
         for label, val in (("Half resolution (fastest)",50),("75% resolution",75),("Full resolution (best quality)",100)):
@@ -349,13 +400,13 @@ class MainPanel(QWidget):
         layout.addLayout(actions)
 
         btns = QHBoxLayout()
-        launch = QPushButton("Launch Roblox + Shader")
-        launch.clicked.connect(self.launch_roblox)
+        launch = QPushButton("Refresh game windows")
+        launch.clicked.connect(self.refresh_windows)
         start = QPushButton("Start on selected window"); start.clicked.connect(self.start)
         stop = QPushButton("Stop overlay"); stop.setObjectName("secondary"); stop.clicked.connect(self.overlay.stop)
         btns.addWidget(launch); btns.addWidget(start); btns.addWidget(stop); layout.addLayout(btns)
 
-        note = QLabel("F8: hide/show overlay  •  F9: stop\nUse windowed or borderless mode. Exclusive fullscreen is not supported.\nRBloxTrex excludes its own overlay from capture to prevent recursive frame feedback. High FPS values are targets and depend on capture speed and GPU.")
+        note = QLabel("F8: hide/show overlay  •  F9: stop\nUses Windows Graphics Capture for the selected game window without hiding/showing the overlay. Windowed or borderless mode is recommended; protected or exclusive-fullscreen games may block capture. FPS is a target, not a guarantee.")
         note.setObjectName("muted"); note.setWordWrap(True); layout.addWidget(note)
         QShortcut(QKeySequence("F8"), self).activated.connect(self.toggle)
         QShortcut(QKeySequence("F9"), self).activated.connect(self.overlay.stop)
@@ -418,9 +469,9 @@ class MainPanel(QWidget):
     def apply_preset(self, *_):
         name = self.preset.currentText()
         presets = {
-            "Low-end (GT 1030)": dict(bloom=12, exposure=5, brightness=1, contrast=110, saturation=105, warmth=4, sharpness=5, vignette=5, chromatic=0, fps=15, scale=50),
-            "Realistic": dict(bloom=24, exposure=10, brightness=2, contrast=116, saturation=108, warmth=7, sharpness=12, vignette=9, chromatic=0, fps=20, scale=75),
-            "Cinematic": dict(bloom=35, exposure=14, brightness=0, contrast=125, saturation=112, warmth=10, sharpness=16, vignette=20, chromatic=1, fps=20, scale=75),
+            "Low-end (GT 1030)": dict(bloom=12, exposure=5, brightness=1, contrast=110, saturation=105, warmth=4, sharpness=5, vignette=5, chromatic=0, fps=30, scale=50),
+            "Realistic": dict(bloom=24, exposure=10, brightness=2, contrast=116, saturation=108, warmth=7, sharpness=12, vignette=9, chromatic=0, fps=30, scale=75),
+            "Cinematic": dict(bloom=35, exposure=14, brightness=0, contrast=125, saturation=112, warmth=10, sharpness=16, vignette=20, chromatic=1, fps=30, scale=75),
         }
         for k,v in presets[name].items():
             self.overlay.engine.settings[k] = v
@@ -428,50 +479,6 @@ class MainPanel(QWidget):
         self.fps.setCurrentIndex(max(0, self.fps.findData(presets[name]["fps"])))
         self.scale.setCurrentIndex(max(0, self.scale.findData(presets[name]["scale"])))
         self.save()
-
-    def launch_roblox(self):
-        # Prefer Roblox's registered protocol handler; fall back to installed player executable.
-        launched = False
-        try:
-            os.startfile("roblox://")
-            launched = True
-        except Exception:
-            pass
-        if not launched:
-            versions_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Roblox" / "Versions"
-            candidates = sorted(versions_dir.glob("version-*/RobloxPlayerBeta.exe"),
-                                key=lambda p: p.stat().st_mtime if p.exists() else 0,
-                                reverse=True)
-            if candidates:
-                try:
-                    # Use the standard Windows shell launcher instead of spawning a command process.
-                    os.startfile(str(candidates[0]))
-                    launched = True
-                except Exception as exc:
-                    QMessageBox.critical(self, "Roblox launch failed", str(exc))
-        if not launched:
-            QMessageBox.warning(
-                self, "Roblox not found",
-                "Could not find the Roblox launcher. Install Roblox from roblox.com, sign in, "
-                "then try again. You can also launch a Roblox experience in your browser first."
-            )
-            return
-        self.refresh_btn.setEnabled(False)
-        self.refresh_btn.setText("Waiting for Roblox…")
-        from PySide6.QtCore import QTimer
-        def find_roblox():
-            self.refresh_windows()
-            for i in range(self.windows.count()):
-                label = self.windows.itemText(i).lower()
-                if "robloxplayerbeta" in label or "roblox" in label:
-                    self.windows.setCurrentIndex(i)
-                    self.start()
-                    self.refresh_btn.setText("Refresh windows")
-                    self.refresh_btn.setEnabled(True)
-                    return
-            self.refresh_btn.setText("Still waiting…")
-            QTimer.singleShot(1800, find_roblox)
-        QTimer.singleShot(2200, find_roblox)
 
     def start(self):
         hwnd = self.windows.currentData()
@@ -482,7 +489,7 @@ class MainPanel(QWidget):
             self.refresh_windows()
             QMessageBox.warning(self, "Window unavailable", "That window is no longer available. Refresh the list.")
             return
-        self.overlay.start(hwnd)
+        self.overlay.start(hwnd, self.windows.currentText().split("  —  ")[0].strip())
 
     def toggle(self):
         if self.overlay.isVisible(): self.overlay.hide()
@@ -498,7 +505,7 @@ class MainPanel(QWidget):
             self.overlay.engine.settings.update(data)
             for k, slider in self.sliders.items():
                 if k in data: slider.setValue(int(data[k]))
-            self.fps.setCurrentIndex(max(0,self.fps.findData(int(data.get("fps",15)))))
+            self.fps.setCurrentIndex(max(0,self.fps.findData(int(data.get("fps",30)))))
             self.scale.setCurrentIndex(max(0,self.scale.findData(int(data.get("scale",50)))))
             name = data.get("preset")
             if name:
@@ -512,8 +519,10 @@ class MainPanel(QWidget):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("RBloxTrex")
-    icon_path = Path(__file__).resolve().parent.parent / "RBloxTrex.ico"
+    app.setApplicationName("ResolShaders")
+    icon_path = Path(__file__).resolve().parent.parent / "ResolShaders.ico"
+    if not icon_path.exists():
+        icon_path = Path(__file__).resolve().parent.parent / "ResolShaders_icon.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     overlay = Overlay()
