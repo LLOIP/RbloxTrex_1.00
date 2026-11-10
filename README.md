@@ -13,7 +13,7 @@ RBloxTrex is a desktop launcher plus screen-space shader overlay for Windows. It
 2. Open Command Prompt in the extracted `RBloxTrex` folder.
 3. Run:
    ```cmd
-   py -m pip install -r requirements.txt
+   py -3.11 -m pip install -r requirements.txt
    py src\main.py
    ```
 
@@ -54,3 +54,8 @@ Bloom approximation, HDR-style tone mapping (not true HDR output), saturation, w
 ### Security and capture behavior (updated build)
 
 This version does not call `SetWindowDisplayAffinity` and does not attempt to hide its overlay from screen capture. It launches the installed Roblox player through the normal Windows shell launcher. The overlay remains click-through. These changes reduce unnecessary Windows API/process-launch behavior, but cannot guarantee that antivirus products will not flag an unsigned PyInstaller executable. Keep Microsoft Defender enabled and submit any detection to Microsoft for review.
+
+
+## Dependency/build reliability update
+
+The GitHub Actions workflow installs dependencies explicitly and verifies imports (including `cv2`) before packaging. The build stops immediately if installation, verification, syntax checking, or packaging fails. `requirements.txt` contains one dependency per actual line.

@@ -1,18 +1,23 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-python -m pip install --upgrade pyinstaller
-python -c "import cv2, numpy; print('OpenCV:', cv2.__version__); print('NumPy:', numpy.__version__)" || goto :error
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import=cv2 --hidden-import=cv2.cv2 --hidden-import=numpy src/main.py
-if errorlevel 1 goto :error
+echo Installing RBloxTrex build dependencies...
+py -3.11 -m pip install --upgrade pip
+if errorlevel 1 goto failed
+py -3.11 -m pip install "PySide6>=6.6,<7" "mss>=9.0" "numpy>=1.26" "opencv-python>=4.9" "pywin32>=306" "psutil>=5.9" pyinstaller
+if errorlevel 1 goto failed
+py -3.11 -c "import cv2, numpy, mss, PySide6, win32gui, psutil; print('OpenCV:', cv2.__version__); print('NumPy:', numpy.__version__)"
+if errorlevel 1 goto failed
+echo Building RBloxTrex.exe...
+py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --collect-all PySide6 --hidden-import win32gui --hidden-import win32process --hidden-import win32con --hidden-import psutil src\main.py
+if errorlevel 1 goto failed
+if not exist "dist\RBloxTrex.exe" goto failed
 echo.
-echo Build complete: dist\RBloxTrex.exe
+echo SUCCESS: dist\RBloxTrex.exe
 pause
 exit /b 0
-:error
+:failed
 echo.
-echo Build failed. Check the error messages above.
+echo BUILD FAILED. Copy the error above and share it for troubleshooting.
 pause
 exit /b 1
