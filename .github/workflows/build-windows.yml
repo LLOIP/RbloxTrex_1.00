@@ -1,3 +1,4 @@
+
 name: Build RBloxTrex
 
 on:
@@ -13,43 +14,42 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Download repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           architecture: "x64"
 
-      - name: Upgrade pip
+      - name: Install dependencies
         shell: powershell
         run: |
           python -m pip install --upgrade pip
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Install OpenCV and dependencies
+          python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless
+
+          python -m pip install --no-cache-dir opencv-python-headless
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+          python -m pip install --no-cache-dir PySide6 mss numpy pywin32 psutil pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Verify OpenCV
         shell: powershell
         run: |
-          python -m pip install --no-cache-dir opencv-python
+          python -c "import sys, cv2; print('PYTHON:', sys.executable); print('CV2:', cv2.__version__); print('CV2 LOCATION:', cv2.__file__)"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-          python -m pip install --no-cache-dir numpy mss PySide6 pywin32 psutil pyinstaller
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: Verify cv2 installation
+      - name: Verify other dependencies
         shell: powershell
         run: |
-          python -c "import cv2; print('OpenCV:', cv2.__version__)"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "OpenCV cv2 failed to import."
-            exit 1
-          }
-
-          python -c "import numpy, mss, PySide6, win32gui, psutil; print('All dependencies loaded.')"
+          python -c "import PySide6, mss, numpy, win32gui, psutil; print('ALL DEPENDENCIES OK')"
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Build RBloxTrex
+      - name: Build EXE
         shell: powershell
         run: |
           python -m PyInstaller `
@@ -59,27 +59,30 @@ jobs:
             --windowed `
             --name RBloxTrex `
             --collect-all cv2 `
-            --collect-all numpy `
-            --collect-all PySide6 `
-            --hidden-import cv2 `
-            --hidden-import win32gui `
-            --hidden-import win32process `
-            --hidden-import win32con `
-            --hidden-import psutil `
+            --collect-submodules cv2 `
+            --collect-binaries cv2 `
+            --hidden-import=cv2 `
+            --hidden-import=cv2.cv2 `
+            --hidden-import=win32gui `
+            --hidden-import=win32process `
+            --hidden-import=win32con `
+            --hidden-import=psutil `
             src/main.py
 
           if ($LASTEXITCODE -ne 0) { exit 1 }
 
-      - name: Verify EXE exists
+      - name: Verify EXE
         shell: powershell
         run: |
           if (!(Test-Path "dist/RBloxTrex.exe")) {
-            Write-Error "RBloxTrex.exe was not generated."
+            Write-Error "EXE was not created!"
             exit 1
           }
+
+          Write-Host "EXE BUILD SUCCESSFUL"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: RBloxTrex-Windows
+          name: RBloxTrex-Windows-${{ github.sha }}
           path: dist/RBloxTrex.exe
