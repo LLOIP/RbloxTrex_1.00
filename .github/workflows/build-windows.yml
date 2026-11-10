@@ -26,11 +26,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
-          python -m pip install pyinstaller
+          python -m pip install --upgrade pyinstaller
+
+      - name: Verify OpenCV before packaging
+        run: |
+          python -c "import cv2, numpy; print('OpenCV:', cv2.__version__); print('NumPy:', numpy.__version__)"
 
       - name: Build standalone EXE
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import cv2 src/main.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import=cv2 --hidden-import=cv2.cv2 --hidden-import=numpy src/main.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
