@@ -13,8 +13,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
-      - name: Check out source
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -29,9 +30,9 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install pyinstaller
 
-      - name: Build EXE
+      - name: Build standalone EXE
         run: |
-          python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." src/main.py
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import cv2 src/main.py
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
