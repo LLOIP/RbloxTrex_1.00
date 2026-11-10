@@ -1,87 +1,54 @@
-name: Build RBloxTrex
+name: Build ResolShaders for Windows
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     tags:
       - "v*"
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout
+      - name: Check out source
         uses: actions/checkout@v4
-
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           architecture: "x64"
-
       - name: Install dependencies
-        shell: powershell
+        shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           python -m pip install --upgrade pip
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-          python -m pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless
-
-          python -m pip install --no-cache-dir opencv-python-headless
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-          python -m pip install --no-cache-dir PySide6 mss numpy pywin32 psutil pyinstaller
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: Verify OpenCV
-        shell: powershell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify dependencies and source
+        shell: pwsh
         run: |
-          python -c "import sys, cv2; print('PYTHON:', sys.executable); print('CV2:', cv2.__version__); print('CV2 LOCATION:', cv2.__file__)"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: Verify other dependencies
-        shell: powershell
+          python -c "import cv2, numpy, PySide6, win32gui, psutil, windows_capture; print('Dependencies OK')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m py_compile src/main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build standalone EXE
+        shell: pwsh
         run: |
-          python -c "import PySide6, mss, numpy, win32gui, psutil; print('ALL DEPENDENCIES OK')"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: Build EXE
-        shell: powershell
-        run: |
-          python -m PyInstaller `
-            --noconfirm `
-            --clean `
-            --onefile `
-            --windowed `
-            --name RBloxTrex `
-            --collect-all cv2 `
-            --collect-submodules cv2 `
-            --collect-binaries cv2 `
-            --hidden-import=cv2 `
-            --hidden-import=cv2.cv2 `
-            --hidden-import=win32gui `
-            --hidden-import=win32process `
-            --hidden-import=win32con `
-            --hidden-import=psutil `
-            src/main.py
-
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-
-      - name: Verify EXE
-        shell: powershell
-        run: |
-          if (!(Test-Path "dist/RBloxTrex.exe")) {
-            Write-Error "EXE was not created!"
-            exit 1
-          }
-
-          Write-Host "EXE BUILD SUCCESSFUL"
-
-      - name: Upload EXE
+          python -m PyInstaller --noconfirm --clean --onefile --windowed --name ResolShaders --icon ResolShaders.ico --add-data "ResolShaders.ico;." --collect-all cv2 --collect-all numpy --collect-all PySide6 --collect-all windows_capture --hidden-import win32gui --hidden-import win32process --hidden-import win32con --hidden-import psutil src/main.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "dist/ResolShaders.exe")) { throw "ResolShaders.exe was not created" }
+      - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RBloxTrex-Windows-${{ github.sha }}
-          path: dist/RBloxTrex.exe
+          name: ResolShaders-Windows-x64
+          path: dist/ResolShaders.exe
+          if-no-files-found: error
+      - name: Publish GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ResolShaders.exe
