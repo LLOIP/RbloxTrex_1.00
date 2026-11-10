@@ -59,7 +59,3 @@ This version does not call `SetWindowDisplayAffinity` and does not attempt to hi
 ## Dependency/build reliability update
 
 The GitHub Actions workflow installs dependencies explicitly and verifies imports (including `cv2`) before packaging. The build stops immediately if installation, verification, syntax checking, or packaging fails. `requirements.txt` contains one dependency per actual line.
-
-
-## Startup notice and Discord
-On launch, RBloxTrex displays a usage notice explaining that it is an external screen-capture overlay, its limitations, and performance considerations. The main window includes the RBloxTrex logo and a button linking to the community Discord: https://discord.gg/B8fcyK8FTT.
