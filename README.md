@@ -59,3 +59,11 @@ This version does not call `SetWindowDisplayAffinity` and does not attempt to hi
 ## Dependency/build reliability update
 
 The GitHub Actions workflow installs dependencies explicitly and verifies imports (including `cv2`) before packaging. The build stops immediately if installation, verification, syntax checking, or packaging fails. `requirements.txt` contains one dependency per actual line.
+
+## Pink Edition update
+- Pink-and-white interface with a short fade-in and subtle original click sound.
+- Overlay uses click-through and no-activate extended window styles so mouse/keyboard focus stays with the selected game.
+- Removed `WDA_EXCLUDEFROMCAPTURE` from the overlay because it can appear as a black rectangle in some desktop capture paths. The capture worker now briefly hides the overlay only while taking each frame, then restores it without activating it.
+- The click sound is generated locally on first launch; no downloaded audio is used.
+
+Note: this is a Windows desktop-capture post-processing overlay, not a true in-game renderer. Capture behavior can still vary by Windows build, GPU driver, and Roblox display mode. Windowed or borderless mode is recommended.

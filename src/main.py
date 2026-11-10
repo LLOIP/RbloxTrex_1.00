@@ -4,6 +4,9 @@ import ctypes
 import json
 import time
 import threading
+import wave
+import math
+import struct
 from pathlib import Path
 
 import cv2
@@ -13,13 +16,14 @@ import win32gui
 import win32process
 import win32con
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QPropertyAnimation, QEasingCurve, QUrl
 from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut, QIcon
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox, QSlider,
     QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QMessageBox,
-    QCheckBox
+    QCheckBox, QGraphicsOpacityEffect
 )
+from PySide6.QtMultimedia import QSoundEffect
 
 APP_DIR = Path.home() / "AppData" / "Local" / "RBloxTrex"
 APP_DIR.mkdir(parents=True, exist_ok=True)
@@ -135,9 +139,10 @@ class FrameBus(QObject):
 
 
 class WindowCaptureWorker(threading.Thread):
-    def __init__(self, hwnd, engine, bus):
+    def __init__(self, hwnd, engine, bus, overlay_hwnd):
         super().__init__(daemon=True)
         self.hwnd, self.engine, self.bus = hwnd, engine, bus
+        self.overlay_hwnd = overlay_hwnd
         self.running = True
 
     def stop(self):
@@ -164,9 +169,21 @@ class WindowCaptureWorker(threading.Thread):
                     if cr <= cl or cb <= ct:
                         time.sleep(0.1)
                         continue
-                    shot = np.asarray(sct.grab({
-                        "left": cl, "top": ct, "width": cr-cl, "height": cb-ct
-                    }))
+                    # Temporarily hide our own overlay while taking the desktop
+                    # frame. WDA_EXCLUDEFROMCAPTURE can produce a black rectangle
+                    # in MSS captures on some Windows/GPU combinations.
+                    # Hide/show is done with Win32 and NOACTIVATE so Roblox keeps focus.
+                    hidden = False
+                    try:
+                        if self.overlay_hwnd and user32.IsWindow(self.overlay_hwnd):
+                            user32.ShowWindow(self.overlay_hwnd, 0)  # SW_HIDE
+                            hidden = True
+                        shot = np.asarray(sct.grab({
+                            "left": cl, "top": ct, "width": cr-cl, "height": cb-ct
+                        }))
+                    finally:
+                        if hidden and self.overlay_hwnd and user32.IsWindow(self.overlay_hwnd):
+                            user32.ShowWindow(self.overlay_hwnd, 4)  # SW_SHOWNOACTIVATE
                     frame = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
                     filtered = self.engine.apply(frame)
                     # Position in virtual desktop coordinates.
@@ -182,7 +199,8 @@ class Overlay(QWidget):
         super().__init__()
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint |
-                            Qt.WindowType.Tool)
+                            Qt.WindowType.Tool |
+                            Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
         self.label = QLabel(self)
         self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -212,24 +230,18 @@ class Overlay(QWidget):
             try:
                 hwnd_overlay = int(self.winId())
                 exstyle = user32.GetWindowLongW(hwnd_overlay, -20)
-                user32.SetWindowLongW(hwnd_overlay, -20, exstyle | 0x00000020 | 0x00000080)
-                # Keep RBloxTrex out of desktop captures. Without this, MSS can
-                # capture the previous processed overlay frame, causing recursive
-                # feedback that progressively washes the image out to grey/white.
-                # WDA_EXCLUDEFROMCAPTURE is supported on Windows 10 version 2004+.
-                try:
-                    user32.SetWindowDisplayAffinity(hwnd_overlay, 0x00000011)
-                except Exception:
-                    pass
+                # WS_EX_TRANSPARENT = click-through; WS_EX_NOACTIVATE = never steal focus.
+                user32.SetWindowLongW(hwnd_overlay, -20, exstyle | 0x00000020 | 0x00000080 | 0x08000000)
+                user32.SetWindowPos(hwnd_overlay, -1, 0, 0, 0, 0,
+                                    0x0001 | 0x0002 | 0x0010 | 0x0040)
             except Exception:
                 pass
-        self.raise_()
 
     def start(self, hwnd):
         if self.active:
             self.stop()
         self.active = True
-        self.worker = WindowCaptureWorker(hwnd, self.engine, self.bus)
+        self.worker = WindowCaptureWorker(hwnd, self.engine, self.bus, int(self.winId()))
         self.worker.start()
 
     def stop(self):
@@ -257,21 +269,24 @@ class MainPanel(QWidget):
         self.setWindowTitle("RBloxTrex")
         self.setMinimumWidth(440)
         self.setStyleSheet("""
-            QWidget { background:#101722; color:#edf3fb; font-family:Segoe UI; font-size:10pt; }
-            QGroupBox { border:1px solid #29384b; border-radius:9px; margin-top:10px; padding:10px; font-weight:600; }
-            QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 5px; }
-            QPushButton { background:#2878e5; border:0; border-radius:7px; padding:9px; font-weight:600; }
-            QPushButton:hover { background:#3c8cff; }
-            QPushButton#secondary { background:#39475a; }
-            QComboBox { background:#1b2736; padding:7px; border:1px solid #35465d; border-radius:6px; }
-            QSlider::groove:horizontal { height:5px; background:#344357; border-radius:2px; }
-            QSlider::handle:horizontal { background:#58a0ff; width:14px; margin:-5px 0; border-radius:7px; }
-            QLabel#muted { color:#9fb0c4; font-size:9pt; }
+            QWidget { background:#fff7fb; color:#542b43; font-family:Segoe UI; font-size:10pt; }
+            QGroupBox { background:#ffffff; border:1px solid #f2c9dc; border-radius:12px; margin-top:10px; padding:10px; font-weight:700; }
+            QGroupBox::title { subcontrol-origin:margin; left:10px; padding:0 6px; color:#c64f8c; }
+            QPushButton { background:#e978ad; color:white; border:0; border-radius:9px; padding:10px; font-weight:700; }
+            QPushButton:hover { background:#d85c98; }
+            QPushButton:pressed { background:#bd477f; padding-top:11px; padding-bottom:9px; }
+            QPushButton#secondary { background:#f7dce9; color:#8b3e67; }
+            QPushButton#secondary:hover { background:#f2c6dc; }
+            QComboBox { background:#fff; color:#542b43; padding:8px; border:1px solid #efbfd5; border-radius:7px; }
+            QComboBox QAbstractItemView { background:#fff; selection-background-color:#f5c6dc; color:#542b43; }
+            QSlider::groove:horizontal { height:6px; background:#f2d8e5; border-radius:3px; }
+            QSlider::handle:horizontal { background:#df6da4; border:2px solid white; width:15px; height:15px; margin:-6px 0; border-radius:8px; }
+            QLabel#muted { color:#a47791; font-size:9pt; }
         """)
         layout = QVBoxLayout(self)
-        title = QLabel("REALISTIC SHADERS  <span style='color:#58a0ff'>V2</span>")
+        title = QLabel("RBloxTrex  <span style='color:#df6da4'>PINK EDITION</span>")
         title.setTextFormat(Qt.TextFormat.RichText)
-        title.setStyleSheet("font-size:17pt;font-weight:800;")
+        title.setStyleSheet("font-size:19pt;font-weight:800;color:#6b3654;")
         layout.addWidget(title)
         sub = QLabel("Window-specific post-processing • Low-end PC mode")
         sub.setObjectName("muted")
@@ -345,8 +360,44 @@ class MainPanel(QWidget):
         QShortcut(QKeySequence("F8"), self).activated.connect(self.toggle)
         QShortcut(QKeySequence("F9"), self).activated.connect(self.overlay.stop)
 
+        # Soft click sounds; create a tiny original UI tone locally (no external assets).
+        self._sound_file = APP_DIR / "ui_click.wav"
+        try:
+            if not self._sound_file.exists():
+                rate, duration = 22050, 0.055
+                with wave.open(str(self._sound_file), "wb") as wav:
+                    wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(rate)
+                    samples = []
+                    for i in range(int(rate * duration)):
+                        envelope = max(0.0, 1.0 - i / (rate * duration))
+                        sample = int(4500 * envelope * math.sin(2 * math.pi * 740 * i / rate))
+                        samples.append(struct.pack("<h", sample))
+                    wav.writeframes(b"".join(samples))
+            self._click_sound = QSoundEffect(self)
+            self._click_sound.setSource(QUrl.fromLocalFile(str(self._sound_file)))
+            self._click_sound.setVolume(0.16)
+            for button in self.findChildren(QPushButton):
+                button.clicked.connect(self.play_click)
+        except Exception:
+            self._click_sound = None
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._fade_effect)
+        self._fade_animation = QPropertyAnimation(self._fade_effect, b"opacity", self)
+        self._fade_animation.setDuration(260)
+        self._fade_animation.setStartValue(0.0)
+        self._fade_animation.setEndValue(1.0)
+        self._fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._fade_animation.start()
         self.refresh_windows()
         self.load()
+
+    def play_click(self):
+        try:
+            if self._click_sound:
+                self._click_sound.stop()
+                self._click_sound.play()
+        except Exception:
+            pass
 
     def refresh_windows(self):
         current = self.windows.currentData()
