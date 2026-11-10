@@ -13,8 +13,8 @@ import win32gui
 import win32process
 import win32con
 
-from PySide6.QtCore import Qt, QTimer, Signal, QObject
-from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut, QIcon
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QUrl
+from PySide6.QtGui import QImage, QPixmap, QKeySequence, QShortcut, QIcon, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QWidget, QLabel, QPushButton, QComboBox, QSlider,
     QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QMessageBox,
@@ -24,6 +24,12 @@ from PySide6.QtWidgets import (
 APP_DIR = Path.home() / "AppData" / "Local" / "RBloxTrex"
 APP_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG = APP_DIR / "settings.json"
+
+def asset_path(name):
+    """Resolve bundled assets in both source runs and PyInstaller one-file builds."""
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base / name
+
 user32 = ctypes.windll.user32
 
 
@@ -171,7 +177,7 @@ class WindowCaptureWorker(threading.Thread):
                     filtered = self.engine.apply(frame)
                     # Position in virtual desktop coordinates.
                     self.bus.frame.emit(filtered, (cl, ct, cr-cl, cb-ct))
-                    fps = max(5, min(30, int(self.engine.settings["fps"])))
+                    fps = max(5, min(240, int(self.engine.settings["fps"])))
                     time.sleep(max(0.0, 1.0/fps - (time.perf_counter()-start)))
         except Exception as exc:
             self.bus.error.emit(str(exc))
@@ -261,13 +267,24 @@ class MainPanel(QWidget):
             QLabel#muted { color:#9fb0c4; font-size:9pt; }
         """)
         layout = QVBoxLayout(self)
-        title = QLabel("REALISTIC SHADERS  <span style='color:#58a0ff'>V2</span>")
-        title.setTextFormat(Qt.TextFormat.RichText)
-        title.setStyleSheet("font-size:17pt;font-weight:800;")
-        layout.addWidget(title)
+        header = QHBoxLayout()
+        logo = QLabel()
+        logo_path = asset_path("RBloxTrex_icon.png")
+        if logo_path.exists():
+            logo.setPixmap(QPixmap(str(logo_path)).scaled(
+                58, 58, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+        logo.setFixedSize(64, 64)
+        header.addWidget(logo)
+        heading = QVBoxLayout()
+        title = QLabel("RBloxTrex")
+        title.setStyleSheet("font-size:21pt;font-weight:800;")
+        heading.addWidget(title)
         sub = QLabel("Window-specific post-processing • Low-end PC mode")
         sub.setObjectName("muted")
-        layout.addWidget(sub)
+        heading.addWidget(sub)
+        header.addLayout(heading, 1)
+        layout.addLayout(header)
 
         win_group = QGroupBox("Target window")
         win_layout = QVBoxLayout(win_group)
@@ -306,7 +323,7 @@ class MainPanel(QWidget):
         perf = QGroupBox("Performance")
         pform = QFormLayout(perf)
         self.fps = QComboBox()
-        for v in (15, 20, 30): self.fps.addItem(f"{v} FPS", v)
+        for v in (15, 20, 30, 60, 90, 120, 144, 165, 180, 200, 240): self.fps.addItem(f"{v} FPS", v)
         self.fps.setCurrentIndex(0)
         self.fps.currentIndexChanged.connect(lambda _: self.set_setting("fps", self.fps.currentData()))
         self.scale = QComboBox()
@@ -334,6 +351,12 @@ class MainPanel(QWidget):
 
         note = QLabel("F8: hide/show overlay  •  F9: stop\nUse windowed or borderless mode. Exclusive fullscreen is not supported.")
         note.setObjectName("muted"); note.setWordWrap(True); layout.addWidget(note)
+
+        discord_btn = QPushButton("Join the RBloxTrex Discord server")
+        discord_btn.setObjectName("secondary")
+        discord_btn.clicked.connect(lambda: QDesktopServices.openUrl(
+            QUrl("https://discord.gg/B8fcyK8FTT")))
+        layout.addWidget(discord_btn)
         QShortcut(QKeySequence("F8"), self).activated.connect(self.toggle)
         QShortcut(QKeySequence("F9"), self).activated.connect(self.overlay.stop)
 
@@ -454,12 +477,24 @@ class MainPanel(QWidget):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("RBloxTrex")
-    icon_path = Path(__file__).resolve().parent.parent / "RBloxTrex.ico"
+    icon_path = asset_path("RBloxTrex.ico")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     overlay = Overlay()
     panel = MainPanel(overlay)
     panel.show()
+    QMessageBox.warning(
+        panel,
+        "How RBloxTrex works — read before using",
+        "RBloxTrex is an external screen-effect overlay. It captures the selected visible window, "
+        "applies visual filters, then displays the processed image above that window.\n\n"
+        "• It does NOT inject into Roblox, modify Roblox files, or change game memory.\n"
+        "• Select a visible window and press Start on selected window, or use Launch Roblox + Shader.\n"
+        "• Use windowed or borderless mode. Exclusive fullscreen is not supported.\n"
+        "• Bloom and HDR-style exposure are visual approximations, not true HDR or ray tracing.\n"
+        "• Screen capture and effects can reduce FPS. Use the Low-end (GT 1030) preset and 50% scale on slower PCs.\n\n"
+        "Only select windows you are comfortable having captured on your own screen."
+    )
     sys.exit(app.exec())
 
 
