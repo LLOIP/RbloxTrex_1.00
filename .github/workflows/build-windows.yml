@@ -1,4 +1,3 @@
-
 name: Build RBloxTrex for Windows
 
 on:
@@ -13,9 +12,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
     steps:
-      - name: Checkout source
+      - name: Check out source
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -34,9 +32,15 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import cv2 src/main.py
 
-      - name: Upload EXE
+      - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: RBloxTrex-Windows-x64
           path: dist/RBloxTrex.exe
           if-no-files-found: error
+
+      - name: Publish GitHub Release for version tags
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/RBloxTrex.exe
