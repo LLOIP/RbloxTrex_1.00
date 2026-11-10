@@ -1,0 +1,1 @@
+PySide6>=6.6,<7\nmss>=9.0\nnumpy>=1.26\nopencv-python>=4.9\npywin32>=306\npsutil>=5.9\n
