@@ -1,20 +1,18 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Installing RBloxTrex build dependencies...
-py -3.11 -m pip install --upgrade pip
-if errorlevel 1 goto failed
-py -3.11 -m pip install -r requirements.txt pyinstaller
-if errorlevel 1 goto failed
-echo Building RBloxTrex.exe...
-py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import cv2 src\main.py
-if errorlevel 1 goto failed
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install --upgrade pyinstaller
+python -c "import cv2, numpy; print('OpenCV:', cv2.__version__); print('NumPy:', numpy.__version__)" || goto :error
+python -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import=cv2 --hidden-import=cv2.cv2 --hidden-import=numpy src/main.py
+if errorlevel 1 goto :error
 echo.
-echo SUCCESS: dist\RBloxTrex.exe
+echo Build complete: dist\RBloxTrex.exe
 pause
 exit /b 0
-:failed
+:error
 echo.
-echo BUILD FAILED. Copy the error above and share it for troubleshooting.
+echo Build failed. Check the error messages above.
 pause
 exit /b 1
