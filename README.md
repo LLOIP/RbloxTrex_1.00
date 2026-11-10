@@ -49,3 +49,8 @@ Bloom approximation, HDR-style tone mapping (not true HDR output), saturation, w
 - If Roblox is not detected, click Refresh windows after it has opened.
 - If the overlay appears black, protected content or capture restrictions may be blocking screen capture.
 - If you see a repeated/recursive image, press F9 and restart the app.
+
+
+### Security and capture behavior (updated build)
+
+This version does not call `SetWindowDisplayAffinity` and does not attempt to hide its overlay from screen capture. It launches the installed Roblox player through the normal Windows shell launcher. The overlay remains click-through. These changes reduce unnecessary Windows API/process-launch behavior, but cannot guarantee that antivirus products will not flag an unsigned PyInstaller executable. Keep Microsoft Defender enabled and submit any detection to Microsoft for review.

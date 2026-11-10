@@ -1,6 +1,5 @@
 import sys
 import os
-import subprocess
 import ctypes
 import json
 import time
@@ -209,11 +208,6 @@ class Overlay(QWidget):
             Qt.TransformationMode.FastTransformation))
         if not self.isVisible():
             self.show()
-            # Exclude the overlay from Windows screen capture to avoid recursive feedback.
-            try:
-                user32.SetWindowDisplayAffinity(int(self.winId()), 0x00000011)  # WDA_EXCLUDEFROMCAPTURE
-            except Exception:
-                pass
             # Click-through overlay so mouse input still reaches Roblox.
             try:
                 hwnd_overlay = int(self.winId())
@@ -391,7 +385,8 @@ class MainPanel(QWidget):
                                 reverse=True)
             if candidates:
                 try:
-                    subprocess.Popen([str(candidates[0])], cwd=str(candidates[0].parent))
+                    # Use the standard Windows shell launcher instead of spawning a command process.
+                    os.startfile(str(candidates[0]))
                     launched = True
                 except Exception as exc:
                     QMessageBox.critical(self, "Roblox launch failed", str(exc))

@@ -7,7 +7,7 @@ if errorlevel 1 goto failed
 py -3.11 -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 goto failed
 echo Building RBloxTrex.exe...
-py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." src\main.py
+py -3.11 -m PyInstaller --noconfirm --clean --onefile --windowed --name RBloxTrex --icon RBloxTrex.ico --add-data "RBloxTrex.ico;." --collect-all cv2 --collect-all numpy --hidden-import cv2 src\main.py
 if errorlevel 1 goto failed
 echo.
 echo SUCCESS: dist\RBloxTrex.exe
